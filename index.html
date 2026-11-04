@@ -86,34 +86,46 @@ const norm = (m) => ({ ...m, items: m.items || [], production_time: hhmm(m.produ
 
 /* ---------- Lapisan data (Supabase atau demo localStorage) ---------- */
 const api = {
-  async menus() {
+  async menus(tid) {
     if (!sb) return store.get('qm-menus', DEMO).map(norm);
-    const { data, error } = await sb.from('menus').select('*').order('created_at'); if (error) throw error; return data.map(norm);
+    const { data, error } = await sb.from('menus').select('*').eq('tenant_id', tid).order('created_at'); if (error) throw error; return data.map(norm);
   },
   async menu(slug) {
     if (!sb) return store.get('qm-menus', DEMO).map(norm).find((m) => m.slug === slug) || null;
     const { data, error } = await sb.from('menus').select('*').eq('slug', slug).maybeSingle(); if (error) throw error; return data ? norm(data) : null;
   },
   async save(m) {
-    const row = { id: m.id, slug: m.slug, name: m.name, emoji: m.emoji, items: m.items.map((s) => s.trim()).filter(Boolean), description: m.description,
+    const row = { id: m.id, tenant_id: m.tenant_id, slug: m.slug, name: m.name, emoji: m.emoji, items: m.items.map((s) => s.trim()).filter(Boolean), description: m.description,
       production_date: m.production_date, production_time: m.production_time, max_consume_time: m.max_consume_time,
       calories: +m.calories || 0, protein: +m.protein || 0, carbs: +m.carbs || 0, fat: +m.fat || 0, updated_at: new Date().toISOString() };
-    if (!sb) { const all = store.get('qm-menus', DEMO); const i = all.findIndex((x) => x.id === row.id); if (i < 0) all.push(row); else all[i] = row; store.set('qm-menus', all); return; }
+    if (!sb) { delete row.tenant_id; const all = store.get('qm-menus', DEMO); const i = all.findIndex((x) => x.id === row.id); if (i < 0) all.push(row); else all[i] = row; store.set('qm-menus', all); return; }
     const { error } = await sb.from('menus').upsert(row); if (error) throw error;
   },
   async remove(id) {
     if (!sb) { store.set('qm-menus', store.get('qm-menus', DEMO).filter((x) => x.id !== id)); return; }
     const { error } = await sb.from('menus').delete().eq('id', id); if (error) throw error;
   },
-  async akg() {
+  async akg(tid) {
     if (!sb) return store.get('qm-akg', DEFAULT_AKG);
-    const { data, error } = await sb.from('app_settings').select('*').eq('id', 1).maybeSingle(); if (error) throw error; return data || DEFAULT_AKG;
+    if (!tid) return DEFAULT_AKG;
+    const { data, error } = await sb.from('app_settings').select('*').eq('tenant_id', tid).maybeSingle(); if (error) throw error; return data || DEFAULT_AKG;
   },
-  async saveAkg(a) {
+  async saveAkg(tid, a) {
     const row = { akg_calories: +a.akg_calories || 1, akg_protein: +a.akg_protein || 1, akg_carbs: +a.akg_carbs || 1, akg_fat: +a.akg_fat || 1 };
     if (!sb) { store.set('qm-akg', row); return; }
-    const { error } = await sb.from('app_settings').upsert({ id: 1, ...row, updated_at: new Date().toISOString() }); if (error) throw error;
+    const { error } = await sb.from('app_settings').upsert({ tenant_id: tid, ...row, updated_at: new Date().toISOString() }, { onConflict: 'tenant_id' }); if (error) throw error;
   },
+  /* --- multitenant --- */
+  async me(uid) {
+    const { data, error } = await sb.from('profiles').select('*, tenants(name)').eq('user_id', uid).maybeSingle(); if (error) throw error; return data;
+  },
+  async tenants() { const { data, error } = await sb.from('tenants').select('*').order('created_at'); if (error) throw error; return data; },
+  async owners() { const { data, error } = await sb.from('profiles').select('*').eq('role', 'owner').order('created_at'); if (error) throw error; return data; },
+  async createTenant(name, slug) { const { data, error } = await sb.from('tenants').insert({ name, slug }).select().single(); if (error) throw error; return data; },
+  async deleteTenant(id) { const { error } = await sb.from('tenants').delete().eq('id', id); if (error) throw error; },
+  async createOwner(email, pw, tid) { const { error } = await sb.rpc('create_owner', { p_email: email, p_password: pw, p_tenant: tid }); if (error) throw error; },
+  async setPw(uid, pw) { const { error } = await sb.rpc('set_owner_password', { p_uid: uid, p_password: pw }); if (error) throw error; },
+  async delOwner(uid) { const { error } = await sb.rpc('delete_owner', { p_uid: uid }); if (error) throw error; },
 };
 
 /* ---------- UI dasar ---------- */
@@ -206,7 +218,7 @@ function MenuView({ menu, akg }) {
 /* ---------- Halaman publik (hasil scan QR): /?m=slug ---------- */
 function PublicPage({ slug }) {
   const [s, setS] = useState({ loading: true });
-  useEffect(() => { Promise.all([api.menu(slug), api.akg()]).then(([menu, akg]) => setS({ menu, akg })).catch(() => setS({ error: true })); }, [slug]);
+  useEffect(() => { api.menu(slug).then(async (menu) => setS({ menu, akg: menu ? await api.akg(menu.tenant_id) : null })).catch(() => setS({ error: true })); }, [slug]);
   if (s.loading) return <div className="min-h-screen flex items-center justify-center text-sm text-slate-500">Memuat menu...</div>;
   if (s.error || !s.menu) return (
     <div className="min-h-screen flex items-center justify-center p-6 text-center">
@@ -256,7 +268,7 @@ function Editor({ menu, onSaved, onDeleted }) {
   const save = async () => {
     setBusy(true); setMsg('');
     try { await api.save(d); setD({ ...d, _new: false }); setMsg('Tersimpan'); await onSaved(d.id); }
-    catch (e) { setMsg('Gagal menyimpan: ' + (e.message || e)); }
+    catch (e) { setMsg(e.code === '23505' ? 'Kode link sudah dipakai, ganti dengan yang lain.' : 'Gagal menyimpan: ' + (e.message || e)); }
     setBusy(false);
   };
   const del = async () => {
@@ -315,7 +327,7 @@ function AkgBox({ akg, onSave }) {
 }
 
 /* ---------- Aplikasi admin ---------- */
-function AdminApp({ onLogout }) {
+function AdminApp({ onLogout, tenantId, tenantName, onBack }) {
   const [tab, setTab] = useState('admin');
   const [menus, setMenus] = useState(null);
   const [akg, setAkg] = useState(DEFAULT_AKG);
@@ -324,7 +336,7 @@ function AdminApp({ onLogout }) {
   const [err, setErr] = useState('');
   const load = async (keep) => {
     try {
-      const [m, a] = await Promise.all([api.menus(), api.akg()]);
+      const [m, a] = await Promise.all([api.menus(tenantId), api.akg(tenantId)]);
       setMenus(m); setAkg({ ...DEFAULT_AKG, ...a }); setErr('');
       setSelId(keep && m.find((x) => x.id === keep) ? keep : (m[0] && m[0].id) || null);
     } catch (e) { setErr(e.message || 'Gagal memuat data'); setMenus([]); }
@@ -334,7 +346,7 @@ function AdminApp({ onLogout }) {
 
   const addNew = () => {
     const id = crypto.randomUUID ? crypto.randomUUID() : 'm-' + Date.now();
-    const m = { id, slug: 'menu-' + Math.random().toString(36).slice(2, 7), name: 'Menu baru', emoji: '🍱', items: [], description: '', production_date: today(), production_time: '06:00', max_consume_time: '11:00', calories: 0, protein: 0, carbs: 0, fat: 0, _new: true };
+    const m = { id, slug: 'menu-' + Math.random().toString(36).slice(2, 7), name: 'Menu baru', emoji: '🍱', items: [], description: '', production_date: today(), production_time: '06:00', max_consume_time: '11:00', calories: 0, protein: 0, carbs: 0, fat: 0, tenant_id: tenantId, _new: true };
     setMenus([...(menus || []), m]); setSelId(id); setTab('admin');
   };
   const list = menus || [];
@@ -357,7 +369,7 @@ function AdminApp({ onLogout }) {
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <LogoMark className="w-9 h-9" />
-            <div className="leading-tight"><div className="font-extrabold">Dynamic QR Menu</div><div className="text-[11px] text-sky-300 hidden sm:block">Sistem katering &amp; dapur</div></div>
+            <div className="leading-tight"><div className="font-extrabold">Dynamic QR Menu</div><div className="text-[11px] text-sky-300 hidden sm:block">{tenantName || 'Sistem katering & dapur'}</div></div>
           </div>
           <div className="flex items-center gap-2">
             <nav className="flex bg-blue-900 rounded-xl p-1" role="tablist">
@@ -365,7 +377,7 @@ function AdminApp({ onLogout }) {
                 <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)} className={'flex items-center gap-1.5 rounded-lg px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold transition-colors ' + (tab === k ? 'bg-sky-400 text-slate-900' : 'text-sky-200 hover:text-white')}>
                   <Icon d={ic} className="w-4 h-4" /><span>{l}</span></button>))}
             </nav>
-            {onLogout && <button onClick={onLogout} className="text-xs font-semibold text-sky-200 hover:text-white px-2">Keluar</button>}
+            {onBack && <button onClick={onBack} className="text-xs font-semibold text-sky-200 hover:text-white px-2">&larr; Tenant</button>}{onLogout && <button onClick={onLogout} className="text-xs font-semibold text-sky-200 hover:text-white px-2">Keluar</button>}
           </div>
         </div>
       </header>
@@ -380,7 +392,7 @@ function AdminApp({ onLogout }) {
             <input className={inputCls + ' mt-4'} value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="https://menu.namaanda.com" aria-label="Domain aplikasi" />
           </Card>
 
-          <AkgBox key={JSON.stringify(akg)} akg={akg} onSave={async (a) => { await api.saveAkg(a); await load(selId); }} />
+          <AkgBox key={JSON.stringify(akg)} akg={akg} onSave={async (a) => { await api.saveAkg(tenantId, a); await load(selId); }} />
 
           <Card>
             <div className="flex items-center justify-between gap-3">
@@ -443,19 +455,119 @@ function Login() {
   );
 }
 
-/* ---------- Root: /?m=slug = halaman publik, selain itu = admin ---------- */
+/* ---------- Superadmin: kelola tenant & owner ---------- */
+function OwnerAdd({ busy, onAdd }) {
+  const [email, setEmail] = useState(''); const [pw, setPw] = useState('');
+  return (
+    <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto] items-end">
+      <Field label="Email owner baru"><input type="email" className={inputCls} value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
+      <Field label="Kata sandi (min. 8)"><input type="text" className={inputCls} value={pw} onChange={(e) => setPw(e.target.value)} /></Field>
+      <button disabled={busy || !email || pw.length < 8} onClick={async () => { if (await onAdd(email, pw)) { setEmail(''); setPw(''); } }} className={btnPrimary}>Tambah owner</button>
+    </div>
+  );
+}
+function SuperAdminApp({ onLogout }) {
+  const [tenants, setTenants] = useState(null); const [owners, setOwners] = useState([]);
+  const [err, setErr] = useState(''); const [busy, setBusy] = useState(false); const [open, setOpen] = useState(null);
+  const [f, setF] = useState({ name: '', slug: '', email: '', pw: '' });
+  const load = async () => { try { const [t, o] = await Promise.all([api.tenants(), api.owners()]); setTenants(t); setOwners(o); } catch (e) { setErr(e.message || 'Gagal memuat data'); setTenants([]); } };
+  useEffect(() => { load(); }, []);
+  const run = async (fn) => {
+    setBusy(true); setErr('');
+    try { await fn(); await load(); return true; } catch (e) { setErr(e.message || String(e)); await load(); return false; } finally { setBusy(false); }
+  };
+  if (open) return <AdminApp key={open.id} tenantId={open.id} tenantName={open.name} onBack={() => setOpen(null)} onLogout={onLogout} />;
+  const slugF = f.slug || slugify(f.name);
+  const create = () => run(async () => {
+    const t = await api.createTenant(f.name.trim(), slugF);
+    const { email, pw } = f; setF({ name: '', slug: '', email: '', pw: '' });
+    if (email) { try { await api.createOwner(email, pw, t.id); } catch (e) { throw new Error('Tenant dibuat, tapi owner gagal: ' + e.message + '. Tambahkan owner dari kartu tenant.'); } }
+  });
+  return (
+    <div className="min-h-screen">
+      <header className="bg-slate-900 text-white sticky top-0 z-20">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3"><LogoMark className="w-9 h-9" /><div className="leading-tight"><div className="font-extrabold">Dynamic QR Menu</div><div className="text-[11px] text-sky-300">Superadmin</div></div></div>
+          <button onClick={onLogout} className="text-xs font-semibold text-sky-200 hover:text-white px-2">Keluar</button>
+        </div>
+      </header>
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {err && <div className="rounded-2xl bg-slate-900 text-white text-sm font-medium px-4 py-3">{err}</div>}
+        <Card>
+          <h2 className="font-bold text-slate-900">Tenant baru</h2>
+          <p className="text-xs text-slate-500">Satu tenant = satu klien katering dengan menu, QR, dan acuan AKG sendiri. Owner bisa diisi sekarang atau nanti.</p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <Field label="Nama tenant"><input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+            <Field label="Kode tenant"><input className={inputCls} value={slugF} onChange={(e) => setF({ ...f, slug: slugify(e.target.value) })} /></Field>
+            <Field label="Email owner (opsional)"><input type="email" className={inputCls} value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>
+            <Field label="Kata sandi owner (min. 8)"><input type="text" className={inputCls} value={f.pw} onChange={(e) => setF({ ...f, pw: e.target.value })} /></Field>
+          </div>
+          <div className="mt-4 flex justify-end"><button disabled={busy || !f.name.trim() || !slugF || (f.email && f.pw.length < 8)} onClick={create} className={btnPrimary}>{busy ? 'Memproses...' : 'Buat tenant'}</button></div>
+        </Card>
+        {tenants === null ? <p className="text-sm text-slate-500">Memuat data...</p> : tenants.map((t) => {
+          const os = owners.filter((o) => o.tenant_id === t.id);
+          return (
+            <Card key={t.id}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div><h3 className="font-bold text-slate-900">{t.name}</h3><div className="text-xs text-slate-500">{t.slug} &middot; {os.length} owner</div></div>
+                <div className="flex gap-2">
+                  <button className={btnPrimary} onClick={() => setOpen(t)}>Kelola menu</button>
+                  <button className={btnSoft} disabled={busy} onClick={() => { if (window.confirm('Hapus tenant "' + t.name + '" beserta SEMUA menu dan akun owner-nya? QR menunya tidak akan bisa dibuka lagi.')) run(async () => { for (const o of os) await api.delOwner(o.user_id); await api.deleteTenant(t.id); }); }}>Hapus</button>
+                </div>
+              </div>
+              <ul className="mt-3 divide-y divide-sky-100 text-sm">
+                {os.length ? os.map((o) => (
+                  <li key={o.user_id} className="flex items-center justify-between gap-3 py-2">
+                    <span className="font-medium text-slate-700 break-all">{o.email}</span>
+                    <span className="flex gap-3 shrink-0">
+                      <button className="text-xs font-semibold text-sky-700 hover:underline" onClick={() => { const p = window.prompt('Kata sandi baru untuk ' + o.email + ' (min. 8 karakter):'); if (p) run(() => api.setPw(o.user_id, p)); }}>Ganti sandi</button>
+                      <button className="text-xs font-semibold text-slate-900 hover:underline" onClick={() => { if (window.confirm('Hapus akun owner ' + o.email + '?')) run(() => api.delOwner(o.user_id)); }}>Hapus</button>
+                    </span>
+                  </li>)) : <li className="py-2 text-slate-500">Belum ada owner.</li>}
+              </ul>
+              <OwnerAdd busy={busy} onAdd={(email, pw) => run(() => api.createOwner(email, pw, t.id))} />
+            </Card>);
+        })}
+      </main>
+    </div>
+  );
+}
+
+/* ---------- Tanpa akses ---------- */
+function NoAccess({ onLogout }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center p-6 text-center">
+      <div><div className="text-4xl">🔒</div><h1 className="mt-3 font-bold text-blue-900">Akun belum terdaftar</h1><p className="text-sm text-slate-500 mt-1">Hubungi superadmin untuk menetapkan akun Anda sebagai owner.</p>
+        <button onClick={onLogout} className={btnPrimary + ' mt-4'}>Keluar</button></div>
+    </div>);
+}
+
+/* ---------- Root: /?m=slug = halaman publik; selain itu login -> superadmin / owner ---------- */
 function App() {
   const slug = new URLSearchParams(location.search).get('m');
   const [session, setSession] = useState(undefined);
+  const [prof, setProf] = useState(undefined);
   useEffect(() => {
     if (slug || !sb) { setSession(null); return; }
     sb.auth.getSession().then(({ data }) => setSession(data.session));
     const { data: l } = sb.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => l.subscription.unsubscribe();
   }, []);
+  const uid = session && session.user.id;
+  useEffect(() => {
+    if (!sb || slug) return;
+    if (!uid) { setProf(session === undefined ? undefined : null); return; }
+    api.me(uid).then((p) => setProf(p || false)).catch(() => setProf(false));
+  }, [uid, session === undefined]);
   if (slug) return <PublicPage slug={slug} />;
-  if (sb) { if (session === undefined) return null; if (!session) return <Login />; }
-  return <AdminApp onLogout={sb ? () => sb.auth.signOut() : null} />;
+  if (!sb) return <AdminApp onLogout={null} />;
+  if (session === undefined) return null;
+  if (!session) return <Login />;
+  const out = () => { setProf(undefined); sb.auth.signOut(); };
+  if (prof === undefined) return null;
+  if (!prof) return <NoAccess onLogout={out} />;
+  if (prof.role === 'superadmin') return <SuperAdminApp onLogout={out} />;
+  return <AdminApp key={prof.tenant_id} tenantId={prof.tenant_id} tenantName={prof.tenants && prof.tenants.name} onLogout={out} />;
 }
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 </script>
