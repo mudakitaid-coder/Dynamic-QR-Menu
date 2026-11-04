@@ -350,6 +350,7 @@ function AdminApp({ onLogout, tenantId, tenantName, onBack }) {
     setMenus([...(menus || []), m]); setSelId(id); setTab('admin');
   };
   const list = menus || [];
+  const limitReached = !!sb && list.length >= 1; // 1 tenant = 1 QR
   const sel = list.find((m) => m.id === selId) || list[0];
   const base = domain.replace(/\/+$/, '');
   const urlOf = (m) => base + '/?m=' + m.slug;
@@ -396,8 +397,8 @@ function AdminApp({ onLogout, tenantId, tenantName, onBack }) {
 
           <Card>
             <div className="flex items-center justify-between gap-3">
-              <div><h2 className="font-bold text-slate-900">Kelola menu</h2><p className="text-xs text-slate-500">Satu menu punya satu QR. Isi menu bisa diubah kapan saja tanpa mengganti QR.</p></div>
-              <button onClick={addNew} className="shrink-0 flex items-center gap-1.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold px-3.5 py-2 transition-colors"><Icon d={I.plus} className="w-4 h-4" />Menu baru</button>
+              <div><h2 className="font-bold text-slate-900">Kelola menu</h2><p className="text-xs text-slate-500">Satu tenant hanya punya satu QR. Isi menu bisa diubah kapan saja tanpa mengganti QR.</p></div>
+              <button onClick={addNew} disabled={limitReached} title={limitReached ? "Satu tenant hanya boleh punya satu QR" : ""} className="shrink-0 flex items-center gap-1.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold px-3.5 py-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"><Icon d={I.plus} className="w-4 h-4" />Menu baru</button>
             </div>
             <div className="mt-4">{chips}</div>
             {sel ? <Editor key={sel.id} menu={sel} onSaved={load} onDeleted={async () => { await load(); }} /> : <p className="mt-5 text-sm text-slate-500">Belum ada menu. Klik "Menu baru" untuk mulai.</p>}
