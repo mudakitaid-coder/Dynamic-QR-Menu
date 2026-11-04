@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dynamic QR Menu | QR Menu Katering dengan Info Gizi &amp; AKG</title>
+<meta name="description" content="Satu QR untuk setiap menu. Pelanggan scan untuk melihat isi menu, nilai gizi &amp; %AKG, jam produksi, dan batas konsumsi. Isi menu bisa diubah kapan saja tanpa cetak ulang QR." />
+<meta name="theme-color" content="#0f172a" />
+<link rel="icon" type="image/svg+xml" href="logo.svg" />
+<link rel="icon" type="image/png" sizes="48x48" href="favicon-48.png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+
+<!-- Open Graph: preview link di WhatsApp, Telegram, Facebook. Alamat harus absolut (https://...). Jika domain berubah, ganti 3 alamat di bawah. -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Dynamic QR Menu" />
+<meta property="og:locale" content="id_ID" />
+<meta property="og:title" content="Dynamic QR Menu | Satu QR, menu selalu terbaru" />
+<meta property="og:description" content="Scan untuk lihat isi menu, nilai gizi &amp; %AKG, jam produksi, dan batas konsumsi katering Anda." />
+<meta property="og:url" content="https://dynamic-qr-menu-system.vercel.app/" />
+<meta property="og:image" content="https://dynamic-qr-menu-system.vercel.app/og-image.png" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="Dynamic QR Menu: satu QR untuk menu, nilai gizi, AKG, dan batas konsumsi" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Dynamic QR Menu | Satu QR, menu selalu terbaru" />
+<meta name="twitter:description" content="Scan untuk lihat isi menu, nilai gizi &amp; %AKG, jam produksi, dan batas konsumsi katering Anda." />
+<meta name="twitter:image" content="https://dynamic-qr-menu-system.vercel.app/og-image.png" />
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<script>tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'] } } } };</script>
+<style>
+  body { background: #f0f7ff; color: #0f172a; font-family: 'Plus Jakarta Sans', system-ui, sans-serif; }
+  .qr-box canvas { width: 100% !important; height: auto !important; display: block !important; }
+  .qr-box img { display: none !important; }
+  :focus-visible { outline: 2px solid #0ea5e9; outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+/* ================================================================
+   KONFIGURASI SUPABASE — isi setelah project Supabase dibuat (lihat README.md)
+   Kosongkan = mode demo (data hanya tersimpan di browser ini).
+   ================================================================ */
+const CFG = {
+  SUPABASE_URL: 'https://vyqtlpqemyrapkissalm.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_9WFEksMAenafOmfDhaMTQw_TJenAi45',
+};
+const sb = (CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY && window.supabase)
+  ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY) : null;
+
+/* ---------- Util & data demo ---------- */
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+};
+const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const hhmm = (t) => (t || '').slice(0, 5);
+const jam = (t) => hhmm(t).replace(':', '.') + ' WIB';
+const dateId = (d) => d ? new Date(d + 'T00:00').toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : '-';
+const slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+const defaultDomain = () => location.protocol.startsWith('http') ? location.origin : 'https://menu.domainanda.com';
+// Batas konsumsi: jika jam maksimal <= jam produksi, dianggap hari berikutnya
+const expiryAt = (m) => {
+  if (!m.production_date || !m.max_consume_time) return null;
+  const e = new Date(m.production_date + 'T' + hhmm(m.max_consume_time));
+  if (hhmm(m.max_consume_time) <= hhmm(m.production_time)) e.setDate(e.getDate() + 1);
+  return e;
+};
+
+const DEFAULT_AKG = { akg_calories: 2150, akg_protein: 60, akg_carbs: 325, akg_fat: 67 };
+const DEMO = [
+  { id: 'demo-1', slug: 'ayam-bakar-madu', name: 'Paket Ayam Bakar Madu', emoji: '🍗', items: ['Nasi putih', 'Ayam bakar madu', 'Tumis buncis', 'Sambal terasi', 'Buah potong'], description: 'Ayam bakar dengan olesan madu dan rempah, disajikan bersama nasi hangat dan lalapan segar.', production_date: today(), production_time: '05:30', max_consume_time: '11:30', calories: 520, protein: 34, carbs: 58, fat: 16 },
+  { id: 'demo-2', slug: 'ikan-dori-lemon', name: 'Paket Ikan Dori Saus Lemon', emoji: '🐟', items: ['Nasi putih', 'Ikan dori saus lemon', 'Kentang tumbuk', 'Buncis rebus'], description: 'Fillet ikan dori panggang dengan saus lemon-butter yang ringan.', production_date: today(), production_time: '06:00', max_consume_time: '12:00', calories: 460, protein: 30, carbs: 44, fat: 18 },
+];
+const norm = (m) => ({ ...m, items: m.items || [], production_time: hhmm(m.production_time) || '06:00', max_consume_time: hhmm(m.max_consume_time) || '12:00' });
+
+/* ---------- Lapisan data (Supabase atau demo localStorage) ---------- */
+const api = {
+  async menus() {
+    if (!sb) return store.get('qm-menus', DEMO).map(norm);
+    const { data, error } = await sb.from('menus').select('*').order('created_at'); if (error) throw error; return data.map(norm);
+  },
+  async menu(slug) {
+    if (!sb) return store.get('qm-menus', DEMO).map(norm).find((m) => m.slug === slug) || null;
+    const { data, error } = await sb.from('menus').select('*').eq('slug', slug).maybeSingle(); if (error) throw error; return data ? norm(data) : null;
+  },
+  async save(m) {
+    const row = { id: m.id, slug: m.slug, name: m.name, emoji: m.emoji, items: m.items.map((s) => s.trim()).filter(Boolean), description: m.description,
+      production_date: m.production_date, production_time: m.production_time, max_consume_time: m.max_consume_time,
+      calories: +m.calories || 0, protein: +m.protein || 0, carbs: +m.carbs || 0, fat: +m.fat || 0, updated_at: new Date().toISOString() };
+    if (!sb) { const all = store.get('qm-menus', DEMO); const i = all.findIndex((x) => x.id === row.id); if (i < 0) all.push(row); else all[i] = row; store.set('qm-menus', all); return; }
+    const { error } = await sb.from('menus').upsert(row); if (error) throw error;
+  },
+  async remove(id) {
+    if (!sb) { store.set('qm-menus', store.get('qm-menus', DEMO).filter((x) => x.id !== id)); return; }
+    const { error } = await sb.from('menus').delete().eq('id', id); if (error) throw error;
+  },
+  async akg() {
+    if (!sb) return store.get('qm-akg', DEFAULT_AKG);
+    const { data, error } = await sb.from('app_settings').select('*').eq('id', 1).maybeSingle(); if (error) throw error; return data || DEFAULT_AKG;
+  },
+  async saveAkg(a) {
+    const row = { akg_calories: +a.akg_calories || 1, akg_protein: +a.akg_protein || 1, akg_carbs: +a.akg_carbs || 1, akg_fat: +a.akg_fat || 1 };
+    if (!sb) { store.set('qm-akg', row); return; }
+    const { error } = await sb.from('app_settings').upsert({ id: 1, ...row, updated_at: new Date().toISOString() }); if (error) throw error;
+  },
+};
+
+/* ---------- UI dasar ---------- */
+const Icon = ({ d, className = 'w-5 h-5' }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
+);
+const I = {
+  qr: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h3v3h-3zM20 14v3M14 20h3M20 20h1',
+  down: 'M12 3v12M7 10l5 5 5-5M4 21h16', plus: 'M12 5v14M5 12h14',
+  grid: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z',
+  phone: 'M7 2h10a1 1 0 011 1v18a1 1 0 01-1 1H7a1 1 0 01-1-1V3a1 1 0 011-1zM11 18h2',
+  clock: 'M12 21a9 9 0 100-18 9 9 0 000 18zM12 7v5l3 2',
+};
+const LogoMark = ({ className = 'w-9 h-9' }) => (
+  <svg className={className} viewBox="0 0 512 512" role="img" aria-label="Dynamic QR Menu">
+    <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#0f172a" /><stop offset="1" stopColor="#1e3a8a" /></linearGradient></defs>
+    <rect width="512" height="512" rx="112" fill="url(#lg)" />
+    {[[84, 84], [304, 84], [84, 304]].map(([x, y]) => (
+      <g key={x + '-' + y} transform={'translate(' + x + ' ' + y + ')'}>
+        <rect width="124" height="124" rx="26" fill="#e0f2fe" /><rect x="22" y="22" width="80" height="80" rx="14" fill="#172554" /><rect x="42" y="42" width="40" height="40" rx="8" fill="#38bdf8" />
+      </g>))}
+    <circle cx="366" cy="366" r="66" fill="#38bdf8" /><circle cx="366" cy="366" r="46" fill="#172554" /><circle cx="366" cy="366" r="24" fill="#e0f2fe" />
+  </svg>
+);
+const inputCls = 'w-full rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-900 focus:border-sky-500';
+const btnPrimary = 'rounded-xl bg-blue-900 hover:bg-slate-900 text-white text-sm font-semibold px-4 py-2.5 transition-colors disabled:opacity-50';
+const btnSoft = 'rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-700 text-sm font-semibold px-4 py-2.5 transition-colors';
+const Card = ({ children, className = '' }) => <section className={'bg-white rounded-3xl border border-sky-100 p-5 sm:p-6 ' + className}>{children}</section>;
+const Field = ({ label, children }) => (<label className="block"><span className="text-xs font-semibold text-slate-600">{label}</span><div className="mt-1.5">{children}</div></label>);
+
+/* ---------- Tampilan menu untuk pelanggan (dipakai halaman publik & preview) ---------- */
+function MenuView({ menu, akg }) {
+  const exp = expiryAt(menu);
+  const expired = exp && Date.now() > exp.getTime();
+  const items = (menu.items || []).filter(Boolean);
+  const rows = [['Kalori', 'calories', 'kkal', 'akg_calories'], ['Protein', 'protein', 'g', 'akg_protein'], ['Karbohidrat', 'carbs', 'g', 'akg_carbs'], ['Lemak', 'fat', 'g', 'akg_fat']];
+  return (
+    <div className="bg-sky-50 min-h-full">
+      <div className="bg-gradient-to-b from-blue-900 to-blue-800 text-white px-5 pt-6 pb-14">
+        <span className="text-xs font-semibold bg-sky-400/20 text-sky-200 rounded-full px-2.5 py-1">Menu hari ini</span>
+        <div className="mt-3 flex items-center gap-3"><span className="text-4xl">{menu.emoji}</span><h2 className="text-2xl font-extrabold leading-tight">{menu.name}</h2></div>
+      </div>
+      <div className="px-4 -mt-9 pb-8 space-y-4">
+        <div className="bg-white rounded-3xl p-5 shadow-sm border border-sky-100">
+          <h3 className="font-bold text-slate-900">Isi paket</h3>
+          <ul className="mt-3 space-y-2">
+            {items.length ? items.map((it, i) => (
+              <li key={i} className="flex items-center gap-2.5 text-sm font-medium text-slate-700"><span className="w-2 h-2 rounded-full bg-sky-400 shrink-0" />{it}</li>
+            )) : <li className="text-sm text-slate-500">Belum ada daftar menu.</li>}
+          </ul>
+          {menu.description && <p className="mt-4 text-sm text-slate-600 leading-relaxed">{menu.description}</p>}
+        </div>
+
+        <div className="bg-white rounded-3xl p-5 shadow-sm border border-sky-100">
+          <h3 className="font-bold text-slate-900">Info produksi</h3>
+          <dl className="mt-3 divide-y divide-sky-100 text-sm">
+            {[['Tanggal produksi', dateId(menu.production_date)], ['Jam produksi', jam(menu.production_time)], ['Jam maksimal konsumsi', jam(menu.max_consume_time)]].map(([k, v]) => (
+              <div key={k} className="flex justify-between gap-4 py-2.5"><dt className="text-slate-500">{k}</dt><dd className="font-semibold text-blue-900 text-right">{v}</dd></div>
+            ))}
+          </dl>
+          <div className={'mt-3 flex items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold ' + (expired ? 'bg-slate-900 text-white' : 'bg-sky-100 text-blue-900')}>
+            <Icon d={I.clock} className="w-4 h-4 shrink-0" />
+            {expired ? 'Sudah melewati batas konsumsi. Jangan dikonsumsi.' : 'Konsumsi sebelum ' + jam(menu.max_consume_time) + '.'}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-3xl p-5 shadow-sm border border-sky-100">
+          <h3 className="font-bold text-slate-900">Nilai gizi &amp; % AKG</h3>
+          <p className="text-xs text-slate-500">Per satu porsi</p>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            {rows.map(([label, k, unit, ak], i) => {
+              const v = +menu[k] || 0, pct = Math.round((v / (+akg[ak] || 1)) * 100);
+              return (
+                <div key={k} className={'rounded-2xl p-4 border ' + (i === 0 ? 'bg-blue-900 text-white border-blue-900' : 'bg-sky-50 border-sky-100 text-blue-900')}>
+                  <div className={'text-xs font-semibold ' + (i === 0 ? 'text-sky-200' : 'text-sky-600')}>{label}</div>
+                  <div className="mt-1 text-2xl font-extrabold">{v}<span className="text-sm font-semibold ml-1 opacity-70">{unit}</span></div>
+                  <div className={'mt-2 h-1.5 rounded-full ' + (i === 0 ? 'bg-blue-800' : 'bg-sky-100')}><div className="h-full rounded-full bg-sky-400" style={{ width: Math.min(100, pct) + '%' }} /></div>
+                  <div className="mt-1.5 text-xs font-bold">{pct}% AKG</div>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-[11px] text-slate-500 leading-relaxed">%AKG dihitung dari acuan {akg.akg_calories} kkal, protein {akg.akg_protein} g, karbohidrat {akg.akg_carbs} g, dan lemak {akg.akg_fat} g per hari.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Halaman publik (hasil scan QR): /?m=slug ---------- */
+function PublicPage({ slug }) {
+  const [s, setS] = useState({ loading: true });
+  useEffect(() => { Promise.all([api.menu(slug), api.akg()]).then(([menu, akg]) => setS({ menu, akg })).catch(() => setS({ error: true })); }, [slug]);
+  if (s.loading) return <div className="min-h-screen flex items-center justify-center text-sm text-slate-500">Memuat menu...</div>;
+  if (s.error || !s.menu) return (
+    <div className="min-h-screen flex items-center justify-center p-6 text-center">
+      <div><div className="text-4xl">🍽️</div><h1 className="mt-3 font-bold text-blue-900">Menu tidak ditemukan</h1><p className="text-sm text-slate-500 mt-1">Pindai ulang QR di kemasan atau hubungi penyedia katering.</p></div>
+    </div>);
+  return <div className="max-w-md mx-auto min-h-screen shadow-xl"><MenuView menu={s.menu} akg={s.akg} /></div>;
+}
+
+/* ---------- Kartu QR (satu QR untuk satu menu) ---------- */
+function QRCard({ menu, url }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    ref.current.innerHTML = '';
+    try { new QRCode(ref.current, { text: url, width: 512, height: 512, colorDark: '#0f2a5c', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M }); } catch (e) {}
+  }, [url]);
+  const download = () => {
+    const src = ref.current && ref.current.querySelector('canvas'); if (!src) return;
+    const pad = 48, head = 80, foot = 50, out = document.createElement('canvas');
+    out.width = src.width + pad * 2; out.height = src.height + pad * 2 + head + foot;
+    const c = out.getContext('2d');
+    c.fillStyle = '#fff'; c.fillRect(0, 0, out.width, out.height);
+    c.textAlign = 'center'; c.fillStyle = '#0f2a5c'; c.font = '700 38px sans-serif';
+    c.fillText(menu.name.slice(0, 32), out.width / 2, pad + 40);
+    c.drawImage(src, pad, pad + head);
+    c.fillStyle = '#64748b'; c.font = '500 24px sans-serif';
+    c.fillText('Scan untuk info menu & gizi', out.width / 2, out.height - pad + 8);
+    const a = document.createElement('a'); a.download = 'qr-' + menu.slug + '.png'; a.href = out.toDataURL('image/png'); a.click();
+  };
+  return (
+    <div className="bg-sky-50/60 rounded-2xl border border-sky-100 p-4 flex flex-col items-center text-center">
+      <div className="font-bold text-slate-900 text-sm">{menu.emoji} {menu.name}</div>
+      <a href={url} target="_blank" rel="noreferrer" className="mt-0.5 text-[11px] text-sky-600 break-all hover:underline">{url}</a>
+      <div className="mt-3 w-40 p-2.5 rounded-2xl bg-white border border-sky-100"><div ref={ref} className="qr-box" aria-label={'QR ' + menu.name} /></div>
+      <button onClick={download} className={btnPrimary + ' mt-3 w-full flex items-center justify-center gap-2'}><Icon d={I.down} className="w-4 h-4" />Cetak QR (.png)</button>
+    </div>
+  );
+}
+
+/* ---------- Editor menu ---------- */
+const EMOJIS = ['🍗', '🥬', '🐟', '🍛', '🍜', '🥗', '🍱', '🍲', '🥘', '🍳'];
+function Editor({ menu, onSaved, onDeleted }) {
+  const [d, setD] = useState(menu);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const set = (p) => setD({ ...d, ...p });
+  const save = async () => {
+    setBusy(true); setMsg('');
+    try { await api.save(d); setD({ ...d, _new: false }); setMsg('Tersimpan'); await onSaved(d.id); }
+    catch (e) { setMsg('Gagal menyimpan: ' + (e.message || e)); }
+    setBusy(false);
+  };
+  const del = async () => {
+    if (!window.confirm('Hapus menu "' + d.name + '"? QR-nya tidak akan bisa dibuka lagi.')) return;
+    try { if (!d._new) await api.remove(d.id); await onDeleted(d.id); } catch (e) { setMsg('Gagal menghapus: ' + (e.message || e)); }
+  };
+  const nums = [['calories', 'Kalori (kkal)'], ['protein', 'Protein (g)'], ['carbs', 'Karbohidrat (g)'], ['fat', 'Lemak (g)']];
+  return (
+    <div className="mt-5 grid gap-4 md:grid-cols-2">
+      <Field label="Nama menu"><input className={inputCls} value={d.name} onChange={(e) => set({ name: e.target.value })} /></Field>
+      <Field label="Kode link QR (tidak bisa diubah setelah disimpan)">
+        <input className={inputCls + (d._new ? '' : ' bg-sky-50 text-slate-500')} value={d.slug} readOnly={!d._new} onChange={(e) => set({ slug: slugify(e.target.value) })} />
+      </Field>
+      <Field label="Ikon">
+        <div className="flex flex-wrap gap-1.5">{EMOJIS.map((e) => (
+          <button key={e} type="button" onClick={() => set({ emoji: e })} className={'w-10 h-10 rounded-xl text-xl transition-colors ' + (d.emoji === e ? 'bg-sky-400' : 'bg-sky-50 hover:bg-sky-100')}>{e}</button>))}
+        </div>
+      </Field>
+      <Field label="Menu hari ini (satu item per baris)">
+        <textarea rows="4" className={inputCls} value={d.items.join('\n')} onChange={(e) => set({ items: e.target.value.split('\n') })} placeholder={'Nasi putih\nAyam bakar madu\nTumis buncis'} />
+      </Field>
+      <div className="md:col-span-2"><Field label="Deskripsi"><textarea rows="2" className={inputCls} value={d.description} onChange={(e) => set({ description: e.target.value })} /></Field></div>
+      <Field label="Tanggal produksi"><input type="date" className={inputCls} value={d.production_date} onChange={(e) => set({ production_date: e.target.value })} /></Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Jam produksi"><input type="time" className={inputCls} value={d.production_time} onChange={(e) => set({ production_time: e.target.value })} /></Field>
+        <Field label="Jam maksimal konsumsi"><input type="time" className={inputCls} value={d.max_consume_time} onChange={(e) => set({ max_consume_time: e.target.value })} /></Field>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 md:col-span-2">
+        {nums.map(([k, l]) => <Field key={k} label={l}><input type="number" min="0" step="any" className={inputCls} value={d[k]} onChange={(e) => set({ [k]: e.target.value })} /></Field>)}
+      </div>
+      <div className="md:col-span-2 flex flex-wrap items-center justify-between gap-3">
+        <span className="text-sm font-medium text-sky-700">{msg}</span>
+        <div className="flex gap-2">
+          <button onClick={del} className={btnSoft}>Hapus</button>
+          <button onClick={save} disabled={busy || !d.name || !d.slug} className={btnPrimary}>{busy ? 'Menyimpan...' : 'Simpan perubahan'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AkgBox({ akg, onSave }) {
+  const [a, setA] = useState(akg); const [msg, setMsg] = useState('');
+  const f = [['akg_calories', 'Energi (kkal)'], ['akg_protein', 'Protein (g)'], ['akg_carbs', 'Karbohidrat (g)'], ['akg_fat', 'Lemak (g)']];
+  const save = async () => { try { await onSave(a); setMsg('Tersimpan'); } catch (e) { setMsg('Gagal: ' + (e.message || e)); } };
+  return (
+    <Card>
+      <h2 className="font-bold text-slate-900">Acuan AKG harian</h2>
+      <p className="text-xs text-slate-500">Dasar perhitungan % AKG di halaman scan. Isi sesuai kelompok konsumen Anda (misalnya dewasa, anak sekolah).</p>
+      <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {f.map(([k, l]) => <Field key={k} label={l}><input type="number" min="1" className={inputCls} value={a[k]} onChange={(e) => setA({ ...a, [k]: e.target.value })} /></Field>)}
+      </div>
+      <div className="mt-4 flex items-center justify-end gap-3"><span className="text-sm font-medium text-sky-700">{msg}</span><button onClick={save} className={btnPrimary}>Simpan acuan</button></div>
+    </Card>
+  );
+}
+
+/* ---------- Aplikasi admin ---------- */
+function AdminApp({ onLogout }) {
+  const [tab, setTab] = useState('admin');
+  const [menus, setMenus] = useState(null);
+  const [akg, setAkg] = useState(DEFAULT_AKG);
+  const [domain, setDomain] = useState(() => store.get('qm-domain', defaultDomain()));
+  const [selId, setSelId] = useState(null);
+  const [err, setErr] = useState('');
+  const load = async (keep) => {
+    try {
+      const [m, a] = await Promise.all([api.menus(), api.akg()]);
+      setMenus(m); setAkg({ ...DEFAULT_AKG, ...a }); setErr('');
+      setSelId(keep && m.find((x) => x.id === keep) ? keep : (m[0] && m[0].id) || null);
+    } catch (e) { setErr(e.message || 'Gagal memuat data'); setMenus([]); }
+  };
+  useEffect(() => { load(); }, []);
+  useEffect(() => store.set('qm-domain', domain), [domain]);
+
+  const addNew = () => {
+    const id = crypto.randomUUID ? crypto.randomUUID() : 'm-' + Date.now();
+    const m = { id, slug: 'menu-' + Math.random().toString(36).slice(2, 7), name: 'Menu baru', emoji: '🍱', items: [], description: '', production_date: today(), production_time: '06:00', max_consume_time: '11:00', calories: 0, protein: 0, carbs: 0, fat: 0, _new: true };
+    setMenus([...(menus || []), m]); setSelId(id); setTab('admin');
+  };
+  const list = menus || [];
+  const sel = list.find((m) => m.id === selId) || list[0];
+  const base = domain.replace(/\/+$/, '');
+  const urlOf = (m) => base + '/?m=' + m.slug;
+
+  const chips = (
+    <div className="flex gap-2 overflow-x-auto pb-1">
+      {list.map((m) => (
+        <button key={m.id} onClick={() => setSelId(m.id)} className={'shrink-0 flex items-center gap-2 rounded-xl px-3.5 py-2 text-sm font-semibold transition-colors ' + (sel && m.id === sel.id ? 'bg-blue-900 text-white' : 'bg-sky-50 text-sky-700 hover:bg-sky-100')}>
+          <span>{m.emoji}</span><span className="whitespace-nowrap">{m.name || 'Tanpa nama'}</span>
+        </button>))}
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen">
+      <header className="bg-slate-900 text-white sticky top-0 z-20">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <LogoMark className="w-9 h-9" />
+            <div className="leading-tight"><div className="font-extrabold">Dynamic QR Menu</div><div className="text-[11px] text-sky-300 hidden sm:block">Sistem katering &amp; dapur</div></div>
+          </div>
+          <div className="flex items-center gap-2">
+            <nav className="flex bg-blue-900 rounded-xl p-1" role="tablist">
+              {[['admin', 'Admin Dashboard', I.grid], ['preview', 'Preview Scan Public', I.phone]].map(([k, l, ic]) => (
+                <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)} className={'flex items-center gap-1.5 rounded-lg px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold transition-colors ' + (tab === k ? 'bg-sky-400 text-slate-900' : 'text-sky-200 hover:text-white')}>
+                  <Icon d={ic} className="w-4 h-4" /><span>{l}</span></button>))}
+            </nav>
+            {onLogout && <button onClick={onLogout} className="text-xs font-semibold text-sky-200 hover:text-white px-2">Keluar</button>}
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
+        {!sb && <div className="rounded-2xl bg-sky-100 text-blue-900 text-sm font-medium px-4 py-3">Mode demo: data tersimpan di browser ini saja. Isi <code>CFG</code> di bagian atas script agar terhubung ke Supabase.</div>}
+        {err && <div className="rounded-2xl bg-slate-900 text-white text-sm font-medium px-4 py-3">{err}</div>}
+        {menus === null ? <p className="text-sm text-slate-500">Memuat data...</p> : tab === 'admin' ? (<>
+          <Card>
+            <h2 className="font-bold text-slate-900">Domain aplikasi</h2>
+            <p className="text-xs text-slate-500">Alamat web tempat aplikasi ini tayang. Setiap QR berisi alamat ini, jadi ubah dulu sebelum mencetak QR.</p>
+            <input className={inputCls + ' mt-4'} value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="https://menu.namaanda.com" aria-label="Domain aplikasi" />
+          </Card>
+
+          <AkgBox key={JSON.stringify(akg)} akg={akg} onSave={async (a) => { await api.saveAkg(a); await load(selId); }} />
+
+          <Card>
+            <div className="flex items-center justify-between gap-3">
+              <div><h2 className="font-bold text-slate-900">Kelola menu</h2><p className="text-xs text-slate-500">Satu menu punya satu QR. Isi menu bisa diubah kapan saja tanpa mengganti QR.</p></div>
+              <button onClick={addNew} className="shrink-0 flex items-center gap-1.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold px-3.5 py-2 transition-colors"><Icon d={I.plus} className="w-4 h-4" />Menu baru</button>
+            </div>
+            <div className="mt-4">{chips}</div>
+            {sel ? <Editor key={sel.id} menu={sel} onSaved={load} onDeleted={async () => { await load(); }} /> : <p className="mt-5 text-sm text-slate-500">Belum ada menu. Klik "Menu baru" untuk mulai.</p>}
+          </Card>
+
+          <Card>
+            <h2 className="font-bold text-slate-900">QR per menu</h2>
+            <p className="text-xs text-slate-500">Cetak lalu tempel di kemasan atau box. Menu yang belum disimpan tidak ditampilkan.</p>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {list.filter((m) => !m._new).map((m) => <QRCard key={m.id} menu={m} url={urlOf(m)} />)}
+            </div>
+          </Card>
+        </>) : (
+          <div className="grid lg:grid-cols-[280px_1fr] gap-6 items-start">
+            <Card><h2 className="font-bold text-slate-900">Simulasi scan</h2><p className="text-xs text-slate-500 mt-1 mb-4">Pilih menu untuk melihat tampilan di HP pelanggan.</p>{chips}</Card>
+            <div className="mx-auto w-full max-w-md">
+              {sel ? (
+                <div className="rounded-[2.5rem] bg-slate-900 p-2.5 shadow-xl">
+                  <div className="rounded-[2rem] overflow-hidden bg-sky-50">
+                    <div className="bg-slate-900 text-sky-200 text-[11px] px-5 py-2 truncate">{urlOf(sel)}</div>
+                    <MenuView menu={sel} akg={akg} />
+                  </div>
+                </div>) : <p className="text-sm text-slate-500">Belum ada menu.</p>}
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+/* ---------- Login admin (hanya saat Supabase aktif) ---------- */
+function Login() {
+  const [email, setEmail] = useState(''); const [pw, setPw] = useState(''); const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true); setErr('');
+    const { error } = await sb.auth.signInWithPassword({ email, password: pw });
+    if (error) setErr('Email atau kata sandi salah.');
+    setBusy(false);
+  };
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4">
+      <div className="w-full max-w-sm bg-white rounded-3xl border border-sky-100 p-6 shadow-sm">
+        <LogoMark className="w-12 h-12" />
+        <h1 className="mt-4 text-xl font-extrabold text-blue-900">Masuk admin</h1>
+        <p className="text-sm text-slate-500">Kelola menu dan QR katering Anda.</p>
+        <div className="mt-5 space-y-3">
+          <Field label="Email"><input type="email" className={inputCls} value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
+          <Field label="Kata sandi"><input type="password" className={inputCls} value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && submit()} /></Field>
+          {err && <p className="text-sm font-medium text-slate-900 bg-sky-100 rounded-xl px-3 py-2">{err}</p>}
+          <button onClick={submit} disabled={busy || !email || !pw} className={btnPrimary + ' w-full'}>{busy ? 'Masuk...' : 'Masuk'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Root: /?m=slug = halaman publik, selain itu = admin ---------- */
+function App() {
+  const slug = new URLSearchParams(location.search).get('m');
+  const [session, setSession] = useState(undefined);
+  useEffect(() => {
+    if (slug || !sb) { setSession(null); return; }
+    sb.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: l } = sb.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => l.subscription.unsubscribe();
+  }, []);
+  if (slug) return <PublicPage slug={slug} />;
+  if (sb) { if (session === undefined) return null; if (!session) return <Login />; }
+  return <AdminApp onLogout={sb ? () => sb.auth.signOut() : null} />;
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
