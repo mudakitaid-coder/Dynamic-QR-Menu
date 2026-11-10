@@ -97,7 +97,7 @@ const resizeImage = (file, max, mime) => new Promise((res, rej) => {
   r.readAsDataURL(file);
 });
 const HK = ['name', 'emoji', 'items', 'description', 'production_date', 'production_time', 'max_consume_time', 'calories', 'protein', 'carbs', 'fat', 'photo_url', 'poster_title', 'portions', 'fiber'];
-const FL = { name: 'Nama menu', emoji: 'Ikon', items: 'Isi paket', description: 'Deskripsi', production_date: 'Tanggal produksi', production_time: 'Jam produksi', max_consume_time: 'Jam maksimal konsumsi', calories: 'Kalori', protein: 'Protein', carbs: 'Karbohidrat', fat: 'Lemak', photo_url: 'Foto menu', poster_title: 'Judul poster', portions: 'Jumlah porsi', fiber: 'Serat' };
+const FL = { name: 'Nama menu', emoji: 'Ikon', items: 'Isi Ompreng', description: 'Deskripsi', production_date: 'Tanggal produksi', production_time: 'Jam produksi', max_consume_time: 'Jam maksimal konsumsi', calories: 'Kalori', protein: 'Protein', carbs: 'Karbohidrat', fat: 'Lemak', photo_url: 'Foto menu', poster_title: 'Judul poster', portions: 'Jumlah porsi', fiber: 'Serat' };
 const fv = (k, v) => { if (v == null || v === '') return '(kosong)'; if (Array.isArray(v)) return v.join(', ') || '(kosong)'; if (k === 'production_date') return dateId(v); if (/_time$/.test(k)) return jam(v); const t = String(v); return t.length > 90 ? t.slice(0, 90) + '…' : t; };
 const diffMenu = (a, b) => { const ch = {}; HK.forEach((k) => { const x = k === 'items' ? (a.items || []).join('|') : (a[k] == null ? '' : a[k]), y = k === 'items' ? (b.items || []).join('|') : (b[k] == null ? '' : b[k]);
   if (String(x) !== String(y)) ch[k] = k === 'photo_url' ? { from: !!a[k], to: !!b[k] } : { from: a[k] == null ? null : a[k], to: b[k] == null ? null : b[k] }; }); return ch; };
@@ -242,7 +242,7 @@ function MenuView({ menu, akg, brand, onDownload }) {
         </div>
 
         <div className="rounded-2xl border-2 border-blue-400/60 p-4 text-center" style={panel}>
-          <div className="font-extrabold text-amber-400 text-lg">Isi paket</div>
+          <div className="font-extrabold text-amber-400 text-lg">Isi Ompreng</div>
           <p className="mt-2 font-bold text-sm leading-relaxed">{items.length ? items.join(' | ') : 'Belum ada daftar menu.'}</p>
         </div>
 
@@ -490,7 +490,7 @@ async function downloadPoster(menu, akg, brand) {
     c.restore(); rr(580, 520, 444, 370, 28); c.strokeStyle = 'rgba(255,255,255,0.45)'; c.lineWidth = 5; c.stroke();
     if (+menu.portions > 0) { c.save(); c.translate(700, 505); c.rotate(-0.07); rr(-118, -64, 236, 128, 18); c.fillStyle = YEL; c.shadowColor = 'rgba(0,0,0,0.3)'; c.shadowBlur = 18; c.fill(); c.shadowBlur = 0;
       c.fillStyle = INK; c.textAlign = 'center'; c.font = F(800, 58); c.fillText((+menu.portions).toLocaleString('id-ID'), 0, 14); c.font = F(600, 24); spaced('PORSI', 0, 50, 8); c.restore(); c.textAlign = 'left'; }
-    // daftar isi paket
+    // daftar Isi Ompreng
     const items = (menu.items || []).filter(Boolean); c.fillStyle = '#fff'; c.font = F(700, 26); c.textAlign = 'center';
     const ls = []; let cur = ''; items.forEach((it) => { const t = cur ? cur + ' | ' + it : it; if (c.measureText(t).width > 968 && cur) { ls.push(cur); cur = it; } else cur = t; }); if (cur) ls.push(cur);
     ls.slice(0, 2).forEach((l, i) => c.fillText(fit(l, 968), 540, 934 + i * 36));
