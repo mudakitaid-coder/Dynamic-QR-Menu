@@ -672,7 +672,7 @@ function AdminApp({ onLogout, tenantId, tenantName, onBack }) {
             </div>
           </Card>
         </>) : (
-          <div className="grid lg:grid-cols-[280px_1fr] gap-6 items-start">
+          <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[280px_minmax(0,1fr)] gap-6 items-start">
             <Card><h2 className="font-bold text-slate-900">Simulasi scan</h2><p className="text-xs text-slate-500 mt-1 mb-4">Pilih menu untuk melihat tampilan di HP pelanggan.</p>{chips}</Card>
             <div className="mx-auto w-full max-w-md">
               {sel ? (
