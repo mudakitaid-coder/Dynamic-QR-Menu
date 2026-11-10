@@ -84,6 +84,26 @@ const DEMO = [
 ];
 const norm = (m) => ({ ...m, items: m.items || [], production_time: hhmm(m.production_time) || '06:00', max_consume_time: hhmm(m.max_consume_time) || '12:00' });
 
+/* ---------- Gambar (resize sebelum unggah), poster 1080x1080 & riwayat lokal ---------- */
+const resizeImage = (file, max, mime) => new Promise((res, rej) => {
+  if (!/^image\//.test(file.type)) return rej(new Error('File harus berupa gambar'));
+  if (file.size > 15e6) return rej(new Error('Ukuran file maksimal 15 MB'));
+  const r = new FileReader(); r.onerror = () => rej(new Error('Gagal membaca file'));
+  r.onload = () => { const im = new Image(); im.onerror = () => rej(new Error('Gambar tidak valid'));
+    im.onload = () => { const k = Math.min(1, max / Math.max(im.width, im.height)), cv = document.createElement('canvas'); cv.width = Math.round(im.width * k); cv.height = Math.round(im.height * k);
+      const c = cv.getContext('2d'); if (mime === 'image/jpeg') { c.fillStyle = '#fff'; c.fillRect(0, 0, cv.width, cv.height); } c.drawImage(im, 0, 0, cv.width, cv.height);
+      cv.toBlob((b) => b ? res({ blob: b, url: cv.toDataURL(mime, 0.85) }) : rej(new Error('Gagal memproses gambar')), mime, 0.85); };
+    im.src = r.result; };
+  r.readAsDataURL(file);
+});
+const HK = ['name', 'emoji', 'items', 'description', 'production_date', 'production_time', 'max_consume_time', 'calories', 'protein', 'carbs', 'fat', 'photo_url', 'poster_title', 'portions', 'fiber'];
+const FL = { name: 'Nama menu', emoji: 'Ikon', items: 'Isi paket', description: 'Deskripsi', production_date: 'Tanggal produksi', production_time: 'Jam produksi', max_consume_time: 'Jam maksimal konsumsi', calories: 'Kalori', protein: 'Protein', carbs: 'Karbohidrat', fat: 'Lemak', photo_url: 'Foto menu', poster_title: 'Judul poster', portions: 'Jumlah porsi', fiber: 'Serat' };
+const fv = (k, v) => { if (v == null || v === '') return '(kosong)'; if (Array.isArray(v)) return v.join(', ') || '(kosong)'; if (k === 'production_date') return dateId(v); if (/_time$/.test(k)) return jam(v); const t = String(v); return t.length > 90 ? t.slice(0, 90) + '…' : t; };
+const diffMenu = (a, b) => { const ch = {}; HK.forEach((k) => { const x = k === 'items' ? (a.items || []).join('|') : (a[k] == null ? '' : a[k]), y = k === 'items' ? (b.items || []).join('|') : (b[k] == null ? '' : b[k]);
+  if (String(x) !== String(y)) ch[k] = k === 'photo_url' ? { from: !!a[k], to: !!b[k] } : { from: a[k] == null ? null : a[k], to: b[k] == null ? null : b[k] }; }); return ch; };
+const logLocal = (action, m, changes) => { if (action === 'update' && !Object.keys(changes).length) return; const h = store.get('qm-history', []);
+  h.push({ id: 'h-' + Date.now() + Math.random().toString(36).slice(2, 6), menu_id: m.id, menu_name: m.name, action, changes, changed_by_email: 'Mode demo', created_at: new Date().toISOString() }); store.set('qm-history', h.slice(-300)); };
+
 /* ---------- Lapisan data (Supabase atau demo localStorage) ---------- */
 const api = {
   async menus(tid) {
@@ -97,12 +117,12 @@ const api = {
   async save(m) {
     const row = { id: m.id, tenant_id: m.tenant_id, slug: m.slug, name: m.name, emoji: m.emoji, items: m.items.map((s) => s.trim()).filter(Boolean), description: m.description,
       production_date: m.production_date, production_time: m.production_time, max_consume_time: m.max_consume_time,
-      calories: +m.calories || 0, protein: +m.protein || 0, carbs: +m.carbs || 0, fat: +m.fat || 0, updated_at: new Date().toISOString() };
-    if (!sb) { delete row.tenant_id; const all = store.get('qm-menus', DEMO); const i = all.findIndex((x) => x.id === row.id); if (i < 0) all.push(row); else all[i] = row; store.set('qm-menus', all); return; }
+      calories: +m.calories || 0, protein: +m.protein || 0, carbs: +m.carbs || 0, fat: +m.fat || 0, photo_url: m.photo_url || null, poster_title: m.poster_title || null, portions: m.portions === '' || m.portions == null ? null : +m.portions, fiber: m.fiber === '' || m.fiber == null ? null : +m.fiber, updated_at: new Date().toISOString() };
+    if (!sb) { delete row.tenant_id; const all = store.get('qm-menus', DEMO); const i = all.findIndex((x) => x.id === row.id); logLocal(i < 0 ? 'create' : 'update', row, i < 0 ? { name: { to: row.name } } : diffMenu(all[i], row)); if (i < 0) all.push(row); else all[i] = row; store.set('qm-menus', all); return; }
     const { error } = await sb.from('menus').upsert(row); if (error) throw error;
   },
   async remove(id) {
-    if (!sb) { store.set('qm-menus', store.get('qm-menus', DEMO).filter((x) => x.id !== id)); return; }
+    if (!sb) { const all = store.get('qm-menus', DEMO), old = all.find((x) => x.id === id); if (old) logLocal('delete', old, { name: { from: old.name } }); store.set('qm-menus', all.filter((x) => x.id !== id)); return; }
     const { error } = await sb.from('menus').delete().eq('id', id); if (error) throw error;
   },
   async akg(tid) {
@@ -114,6 +134,31 @@ const api = {
     const row = { akg_calories: +a.akg_calories || 1, akg_protein: +a.akg_protein || 1, akg_carbs: +a.akg_carbs || 1, akg_fat: +a.akg_fat || 1 };
     if (!sb) { store.set('qm-akg', row); return; }
     const { error } = await sb.from('app_settings').upsert({ tenant_id: tid, ...row, updated_at: new Date().toISOString() }, { onConflict: 'tenant_id' }); if (error) throw error;
+  },
+  /* --- logo tenant, unggah gambar, riwayat --- */
+  async brand(tid) {
+    const blank = { name: '', logo_url: '' };
+    if (!sb) return store.get('qm-brand', blank);
+    if (!tid) return blank;
+    const { data, error } = await sb.rpc('tenant_brand', { p_tenant: tid }); if (error) throw error; return (data && data[0]) || blank;
+  },
+  async setLogo(tid, url) {
+    if (!sb) { store.set('qm-brand', { ...store.get('qm-brand', {}), logo_url: url }); return; }
+    const { error } = await sb.rpc('set_tenant_logo', { p_tenant: tid, p_url: url || '' }); if (error) throw error;
+  },
+  async upload(tid, kind, file) {
+    const logo = kind === 'logo', mime = logo ? 'image/png' : 'image/jpeg';
+    const r = await resizeImage(file, sb ? (logo ? 512 : 1200) : (logo ? 256 : 640), mime);
+    if (!sb) return r.url;
+    const path = tid + '/' + kind + '-' + Date.now() + (logo ? '.png' : '.jpg');
+    const { error } = await sb.storage.from('menu-media').upload(path, r.blob, { contentType: mime, upsert: true, cacheControl: '31536000' }); if (error) throw error;
+    return sb.storage.from('menu-media').getPublicUrl(path).data.publicUrl;
+  },
+  async history({ menuId, tenantId }) {
+    if (!sb) { let h = store.get('qm-history', []); if (menuId) h = h.filter((x) => x.menu_id === menuId); return h.slice().sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 100); }
+    let q = sb.from('menu_history').select('*').order('created_at', { ascending: false }).limit(100);
+    q = menuId ? q.eq('menu_id', menuId) : q.eq('tenant_id', tenantId);
+    const { data, error } = await q; if (error) throw error; return data;
   },
   /* --- multitenant --- */
   async me(uid) {
@@ -157,59 +202,62 @@ const Card = ({ children, className = '' }) => <section className={'bg-white rou
 const Field = ({ label, children }) => (<label className="block"><span className="text-xs font-semibold text-slate-600">{label}</span><div className="mt-1.5">{children}</div></label>);
 
 /* ---------- Tampilan menu untuk pelanggan (dipakai halaman publik & preview) ---------- */
-function MenuView({ menu, akg }) {
+function MenuView({ menu, akg, brand, onDownload }) {
   const exp = expiryAt(menu);
   const expired = exp && Date.now() > exp.getTime();
   const items = (menu.items || []).filter(Boolean);
-  const rows = [['Kalori', 'calories', 'kkal', 'akg_calories'], ['Protein', 'protein', 'g', 'akg_protein'], ['Karbohidrat', 'carbs', 'g', 'akg_carbs'], ['Lemak', 'fat', 'g', 'akg_fat']];
+  const nf = (v) => String(Math.round((+v || 0) * 10) / 10).replace('.', ',');
+  const rows = [['Karbohidrat', 'carbs', 'g', 'akg_carbs'], ['Serat', 'fiber', 'g', null], ['Protein', 'protein', 'g', 'akg_protein'], ['Lemak', 'fat', 'g', 'akg_fat'], ['Energi', 'calories', 'kkal', 'akg_calories']].filter((r) => r[1] !== 'fiber' || +menu.fiber > 0);
+  const dshort = menu.production_date ? new Date(menu.production_date + 'T00:00').toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }) : '-';
+  const title = (menu.poster_title || '').trim() || 'Menu hari ini';
+  const bn = brand && brand.name;
+  const panel = { background: '#123a9a' };
   return (
-    <div className="bg-sky-50 min-h-full">
-      <div className="bg-gradient-to-b from-blue-900 to-blue-800 text-white px-5 pt-6 pb-14">
-        <span className="text-xs font-semibold bg-sky-400/20 text-sky-200 rounded-full px-2.5 py-1">Menu hari ini</span>
-        <div className="mt-3 flex items-center gap-3"><span className="text-4xl">{menu.emoji}</span><h2 className="text-2xl font-extrabold leading-tight">{menu.name}</h2></div>
+    <div className="relative overflow-hidden text-white min-h-full" style={{ background: 'linear-gradient(180deg,#2358d8,#1740b0)' }}>
+      {menu.photo_url && <img src={menu.photo_url} alt="" aria-hidden="true" className="absolute top-0 left-0 w-full h-80 object-cover opacity-15 blur-sm" />}
+      <div className="relative px-5 pt-7 pb-6 text-center">
+        {brand && brand.logo_url ? <img src={brand.logo_url} alt="Logo" className="mx-auto w-16 h-16 rounded-full bg-white object-contain p-1.5" />
+          : bn ? <div className="mx-auto w-16 h-16 rounded-full bg-white text-blue-800 flex items-center justify-center text-xl font-extrabold">{bn.trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase()}</div> : null}
+        {bn && <div className="mt-2.5 text-[11px] font-semibold uppercase tracking-[0.22em] text-white/90">{bn}</div>}
+        <h2 className="mt-4 text-[2rem] leading-[1.05] font-extrabold uppercase">{title}</h2>
+        <div className="mt-3"><span className="inline-block rounded-xl bg-amber-400 text-slate-900 font-bold text-sm px-4 py-2">{dshort}</span></div>
       </div>
-      <div className="px-4 -mt-9 pb-8 space-y-4">
-        <div className="bg-white rounded-3xl p-5 shadow-sm border border-sky-100">
-          <h3 className="font-bold text-slate-900">Isi paket</h3>
-          <ul className="mt-3 space-y-2">
-            {items.length ? items.map((it, i) => (
-              <li key={i} className="flex items-center gap-2.5 text-sm font-medium text-slate-700"><span className="w-2 h-2 rounded-full bg-sky-400 shrink-0" />{it}</li>
-            )) : <li className="text-sm text-slate-500">Belum ada daftar menu.</li>}
-          </ul>
-          {menu.description && <p className="mt-4 text-sm text-slate-600 leading-relaxed">{menu.description}</p>}
+      <div className="relative px-4 pb-8 space-y-4">
+        <div className="relative">
+          <div className="rounded-3xl overflow-hidden border-4 border-white/30 aspect-[4/3] flex items-center justify-center" style={panel}>{menu.photo_url ? <img src={menu.photo_url} alt={menu.name} className="w-full h-full object-cover" /> : <span className="text-7xl">{menu.emoji}</span>}</div>
+          {+menu.portions > 0 && <div className="absolute -top-3 -left-1 -rotate-3 rounded-2xl bg-amber-400 text-slate-900 px-4 py-2 text-center shadow-lg"><div className="text-2xl font-extrabold leading-none">{(+menu.portions).toLocaleString('id-ID')}</div><div className="text-[11px] font-bold tracking-[0.3em]">PORSI</div></div>}
+        </div>
+        <div className="text-center"><div className="font-extrabold text-lg leading-tight">{menu.emoji} {menu.name}</div>{menu.description && <p className="mt-1.5 text-sm text-white/80 leading-relaxed">{menu.description}</p>}</div>
+
+        <div className="rounded-2xl border-2 border-blue-400/60 overflow-hidden" style={panel}>
+          <div className="px-4 py-3 font-extrabold text-amber-400 text-lg" style={{ background: '#0e2f85' }}>Nilai gizi per porsi</div>
+          <dl className="px-4 py-3 space-y-2.5 text-sm">
+            {rows.map(([l, k, u, ak]) => { const v = +menu[k] || 0, pct = ak ? Math.round((v / (+akg[ak] || 1)) * 100) : null; return (
+              <div key={k}>
+                <div className="flex items-baseline gap-2"><dt className="w-28 font-bold">{l}</dt><dd className="flex-1 font-semibold">: {nf(v)} {u}</dd>{pct !== null && <span className="text-xs font-bold text-amber-300">{pct}% AKG</span>}</div>
+                {pct !== null && <div className="mt-1 h-1.5 rounded-full bg-blue-950/50"><div className="h-full rounded-full bg-amber-400" style={{ width: Math.min(100, pct) + '%' }} /></div>}
+              </div>); })}
+          </dl>
+          <p className="px-4 pb-3 text-[11px] text-white/70 leading-relaxed">%AKG dihitung dari acuan {akg.akg_calories} kkal, protein {akg.akg_protein} g, karbohidrat {akg.akg_carbs} g, dan lemak {akg.akg_fat} g per hari.</p>
         </div>
 
-        <div className="bg-white rounded-3xl p-5 shadow-sm border border-sky-100">
-          <h3 className="font-bold text-slate-900">Info produksi</h3>
-          <dl className="mt-3 divide-y divide-sky-100 text-sm">
+        <div className="rounded-2xl border-2 border-blue-400/60 p-4 text-center" style={panel}>
+          <div className="font-extrabold text-amber-400 text-lg">Isi paket</div>
+          <p className="mt-2 font-bold text-sm leading-relaxed">{items.length ? items.join(' | ') : 'Belum ada daftar menu.'}</p>
+        </div>
+
+        <div className="rounded-2xl border-2 border-blue-400/60 p-4" style={panel}>
+          <div className="font-extrabold text-amber-400 text-lg">Info produksi</div>
+          <dl className="mt-2 divide-y divide-blue-400/30 text-sm">
             {[['Tanggal produksi', dateId(menu.production_date)], ['Jam produksi', jam(menu.production_time)], ['Jam maksimal konsumsi', jam(menu.max_consume_time)]].map(([k, v]) => (
-              <div key={k} className="flex justify-between gap-4 py-2.5"><dt className="text-slate-500">{k}</dt><dd className="font-semibold text-blue-900 text-right">{v}</dd></div>
-            ))}
+              <div key={k} className="flex justify-between gap-4 py-2"><dt className="text-white/75">{k}</dt><dd className="font-bold text-right">{v}</dd></div>))}
           </dl>
-          <div className={'mt-3 flex items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold ' + (expired ? 'bg-slate-900 text-white' : 'bg-sky-100 text-blue-900')}>
+          <div className={'mt-3 flex items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-bold ' + (expired ? 'bg-slate-900 text-white' : 'bg-amber-400 text-slate-900')}>
             <Icon d={I.clock} className="w-4 h-4 shrink-0" />
             {expired ? 'Sudah melewati batas konsumsi. Jangan dikonsumsi.' : 'Konsumsi sebelum ' + jam(menu.max_consume_time) + '.'}
           </div>
         </div>
-
-        <div className="bg-white rounded-3xl p-5 shadow-sm border border-sky-100">
-          <h3 className="font-bold text-slate-900">Nilai gizi &amp; % AKG</h3>
-          <p className="text-xs text-slate-500">Per satu porsi</p>
-          <div className="mt-4 grid grid-cols-2 gap-3">
-            {rows.map(([label, k, unit, ak], i) => {
-              const v = +menu[k] || 0, pct = Math.round((v / (+akg[ak] || 1)) * 100);
-              return (
-                <div key={k} className={'rounded-2xl p-4 border ' + (i === 0 ? 'bg-blue-900 text-white border-blue-900' : 'bg-sky-50 border-sky-100 text-blue-900')}>
-                  <div className={'text-xs font-semibold ' + (i === 0 ? 'text-sky-200' : 'text-sky-600')}>{label}</div>
-                  <div className="mt-1 text-2xl font-extrabold">{v}<span className="text-sm font-semibold ml-1 opacity-70">{unit}</span></div>
-                  <div className={'mt-2 h-1.5 rounded-full ' + (i === 0 ? 'bg-blue-800' : 'bg-sky-100')}><div className="h-full rounded-full bg-sky-400" style={{ width: Math.min(100, pct) + '%' }} /></div>
-                  <div className="mt-1.5 text-xs font-bold">{pct}% AKG</div>
-                </div>
-              );
-            })}
-          </div>
-          <p className="mt-3 text-[11px] text-slate-500 leading-relaxed">%AKG dihitung dari acuan {akg.akg_calories} kkal, protein {akg.akg_protein} g, karbohidrat {akg.akg_carbs} g, dan lemak {akg.akg_fat} g per hari.</p>
-        </div>
+        {onDownload && <button onClick={onDownload} className="w-full flex items-center justify-center gap-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-900 text-sm font-bold px-4 py-3 transition-colors"><Icon d={I.down} className="w-4 h-4" />Unduh JPG (1080 &times; 1080)</button>}
       </div>
     </div>
   );
@@ -218,13 +266,13 @@ function MenuView({ menu, akg }) {
 /* ---------- Halaman publik (hasil scan QR): /?m=slug ---------- */
 function PublicPage({ slug }) {
   const [s, setS] = useState({ loading: true });
-  useEffect(() => { api.menu(slug).then(async (menu) => setS({ menu, akg: menu ? await api.akg(menu.tenant_id) : null })).catch(() => setS({ error: true })); }, [slug]);
+  useEffect(() => { api.menu(slug).then(async (menu) => { if (!menu) return setS({ menu: null }); const [akg, brand] = await Promise.all([api.akg(menu.tenant_id), api.brand(menu.tenant_id).catch(() => ({}))]); setS({ menu, akg, brand }); }).catch(() => setS({ error: true })); }, [slug]);
   if (s.loading) return <div className="min-h-screen flex items-center justify-center text-sm text-slate-500">Memuat menu...</div>;
   if (s.error || !s.menu) return (
     <div className="min-h-screen flex items-center justify-center p-6 text-center">
       <div><div className="text-4xl">🍽️</div><h1 className="mt-3 font-bold text-blue-900">Menu tidak ditemukan</h1><p className="text-sm text-slate-500 mt-1">Pindai ulang QR di kemasan atau hubungi penyedia katering.</p></div>
     </div>);
-  return <div className="max-w-md mx-auto min-h-screen shadow-xl"><MenuView menu={s.menu} akg={s.akg} /></div>;
+  return <div className="max-w-md mx-auto min-h-screen shadow-xl"><MenuView menu={s.menu} akg={s.akg} brand={s.brand} onDownload={() => downloadPoster(s.menu, s.akg, s.brand)} /></div>;
 }
 
 /* ---------- Kartu QR (satu QR untuk satu menu) ---------- */
@@ -260,11 +308,15 @@ function QRCard({ menu, url }) {
 
 /* ---------- Editor menu ---------- */
 const EMOJIS = ['🍗', '🥬', '🐟', '🍛', '🍜', '🥗', '🍱', '🍲', '🥘', '🍳'];
-function Editor({ menu, onSaved, onDeleted }) {
+function Editor({ menu, tenantId, onSaved, onDeleted }) {
   const [d, setD] = useState(menu);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const set = (p) => setD({ ...d, ...p });
+  const [up, setUp] = useState(false);
+  const pick = async (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return; setUp(true); setMsg('');
+    try { const url = await api.upload(d.tenant_id || tenantId, 'menu', f); set({ photo_url: url }); setMsg('Foto siap. Klik "Simpan perubahan".'); } catch (err) { setMsg('Gagal unggah foto: ' + (err.message || err)); }
+    setUp(false); };
   const save = async () => {
     setBusy(true); setMsg('');
     try { await api.save(d); setD({ ...d, _new: false }); setMsg('Tersimpan'); await onSaved(d.id); }
@@ -275,7 +327,7 @@ function Editor({ menu, onSaved, onDeleted }) {
     if (!window.confirm('Hapus menu "' + d.name + '"? QR-nya tidak akan bisa dibuka lagi.')) return;
     try { if (!d._new) await api.remove(d.id); await onDeleted(d.id); } catch (e) { setMsg('Gagal menghapus: ' + (e.message || e)); }
   };
-  const nums = [['calories', 'Kalori (kkal)'], ['protein', 'Protein (g)'], ['carbs', 'Karbohidrat (g)'], ['fat', 'Lemak (g)']];
+  const nums = [['calories', 'Kalori (kkal)'], ['protein', 'Protein (g)'], ['carbs', 'Karbohidrat (g)'], ['fat', 'Lemak (g)'], ['fiber', 'Serat (g, opsional)']];
   return (
     <div className="mt-5 grid gap-4 md:grid-cols-2">
       <Field label="Nama menu"><input className={inputCls} value={d.name} onChange={(e) => set({ name: e.target.value })} /></Field>
@@ -287,6 +339,16 @@ function Editor({ menu, onSaved, onDeleted }) {
           <button key={e} type="button" onClick={() => set({ emoji: e })} className={'w-10 h-10 rounded-xl text-xl transition-colors ' + (d.emoji === e ? 'bg-sky-400' : 'bg-sky-50 hover:bg-sky-100')}>{e}</button>))}
         </div>
       </Field>
+      <div className="md:col-span-2">
+        <span className="text-xs font-semibold text-slate-600">Foto menu (tampil di preview scan publik)</span>
+        <div className="mt-1.5 flex items-center gap-3">
+          <div className="w-24 h-24 rounded-2xl bg-sky-50 border border-sky-100 overflow-hidden flex items-center justify-center text-3xl shrink-0">{d.photo_url ? <img src={d.photo_url} alt="" className="w-full h-full object-cover" /> : d.emoji}</div>
+          <div className="flex flex-wrap gap-2">
+            <label className={btnSoft + ' cursor-pointer'}>{up ? 'Mengunggah...' : d.photo_url ? 'Ganti foto' : 'Pilih foto'}<input type="file" accept="image/*" className="hidden" disabled={up} onChange={pick} /></label>
+            {d.photo_url && <button type="button" onClick={() => set({ photo_url: null })} className={btnSoft}>Hapus foto</button>}
+          </div>
+        </div>
+      </div>
       <Field label="Menu hari ini (satu item per baris)">
         <textarea rows="4" className={inputCls} value={d.items.join('\n')} onChange={(e) => set({ items: e.target.value.split('\n') })} placeholder={'Nasi putih\nAyam bakar madu\nTumis buncis'} />
       </Field>
@@ -296,8 +358,10 @@ function Editor({ menu, onSaved, onDeleted }) {
         <Field label="Jam produksi"><input type="time" className={inputCls} value={d.production_time} onChange={(e) => set({ production_time: e.target.value })} /></Field>
         <Field label="Jam maksimal konsumsi"><input type="time" className={inputCls} value={d.max_consume_time} onChange={(e) => set({ max_consume_time: e.target.value })} /></Field>
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 md:col-span-2">
-        {nums.map(([k, l]) => <Field key={k} label={l}><input type="number" min="0" step="any" className={inputCls} value={d[k]} onChange={(e) => set({ [k]: e.target.value })} /></Field>)}
+      <Field label="Judul poster (opsional)"><input className={inputCls} value={d.poster_title || ''} onChange={(e) => set({ poster_title: e.target.value })} placeholder="MENU MAKAN BERGIZI GRATIS" /></Field>
+      <Field label="Jumlah porsi (opsional)"><input type="number" min="0" className={inputCls} value={d.portions ?? ''} onChange={(e) => set({ portions: e.target.value })} placeholder="1739" /></Field>
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 md:col-span-2">
+        {nums.map(([k, l]) => <Field key={k} label={l}><input type="number" min="0" step="any" className={inputCls} value={d[k] ?? ''} onChange={(e) => set({ [k]: e.target.value })} /></Field>)}
       </div>
       <div className="md:col-span-2 flex flex-wrap items-center justify-between gap-3">
         <span className="text-sm font-medium text-sky-700">{msg}</span>
@@ -326,6 +390,117 @@ function AkgBox({ akg, onSave }) {
   );
 }
 
+/* ---------- Logo tenant ---------- */
+function BrandBox({ brand, tenantId, onChanged }) {
+  const [busy, setBusy] = useState(false); const [msg, setMsg] = useState('');
+  const run = async (fn) => { setBusy(true); setMsg(''); try { await fn(); await onChanged(); setMsg('Tersimpan'); } catch (e) { setMsg('Gagal: ' + (e.message || e)); } setBusy(false); };
+  const pick = (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) run(async () => api.setLogo(tenantId, await api.upload(tenantId, 'logo', f))); };
+  const logo = brand && brand.logo_url;
+  return (
+    <Card>
+      <h2 className="font-bold text-slate-900">Logo tenant</h2>
+      <p className="text-xs text-slate-500">Tampil di preview scan publik dan di gambar JPG 1080 &times; 1080.</p>
+      <div className="mt-4 flex flex-wrap items-center gap-4">
+        <div className="w-20 h-20 rounded-2xl bg-sky-50 border border-sky-100 flex items-center justify-center overflow-hidden shrink-0">{logo ? <img src={logo} alt="Logo tenant" className="w-full h-full object-contain p-1.5" /> : <span className="text-xs text-slate-400">Belum ada</span>}</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className={btnPrimary + ' cursor-pointer'}>{busy ? 'Memproses...' : logo ? 'Ganti logo' : 'Unggah logo'}<input type="file" accept="image/*" className="hidden" disabled={busy} onChange={pick} /></label>
+          {logo && <button disabled={busy} onClick={() => run(() => api.setLogo(tenantId, ''))} className={btnSoft}>Hapus logo</button>}
+          <span className="text-sm font-medium text-sky-700">{msg}</span>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/* ---------- Riwayat perubahan menu (superadmin & owner tenant) ---------- */
+function HistoryCard({ menu, tenantId, version }) {
+  const [rows, setRows] = useState(null); const [all, setAll] = useState(false); const [err, setErr] = useState('');
+  useEffect(() => {
+    let on = true; setRows(null); setErr('');
+    api.history({ menuId: all ? null : menu.id, tenantId }).then((r) => { if (on) setRows(r); }).catch((e) => { if (on) { setErr(e.message || 'Gagal memuat riwayat'); setRows([]); } });
+    return () => { on = false; };
+  }, [menu.id, all, version]);
+  const ACT = { create: 'Menu dibuat', update: 'Menu diubah', delete: 'Menu dihapus' };
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div><h2 className="font-bold text-slate-900">Riwayat perubahan menu</h2><p className="text-xs text-slate-500">Hanya terlihat oleh superadmin dan owner tenant ini.</p></div>
+        <label className="flex items-center gap-2 text-xs font-semibold text-slate-600"><input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} />Semua menu (termasuk yang dihapus)</label>
+      </div>
+      {err && <p className="mt-3 text-sm text-slate-700">{err}</p>}
+      {rows === null ? <p className="mt-4 text-sm text-slate-500">Memuat riwayat...</p> : !rows.length ? <p className="mt-4 text-sm text-slate-500">Belum ada riwayat perubahan.</p> : (
+        <ul className="mt-4 divide-y divide-sky-100">
+          {rows.map((r) => (
+            <li key={r.id} className="py-3 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold text-slate-900">{ACT[r.action] || r.action}{all && r.menu_name ? ': ' + r.menu_name : ''}</span>
+                <span className="text-xs text-slate-500">{new Date(r.created_at).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' })} &middot; {r.changed_by_email || 'Tidak diketahui'}</span>
+              </div>
+              {r.action === 'update' && <ul className="mt-1.5 space-y-0.5 text-xs text-slate-600">{Object.entries(r.changes || {}).map(([k, v]) => <li key={k}>{k === 'photo_url' ? 'Foto menu ' + (v.to ? (v.from ? 'diganti' : 'ditambahkan') : 'dihapus') : <><b>{FL[k] || k}</b>: {fv(k, v.from)} &rarr; {fv(k, v.to)}</>}</li>)}</ul>}
+            </li>))}
+        </ul>)}
+    </Card>
+  );
+}
+
+/* ---------- Unduh JPG 1080x1080 (ukuran postingan Instagram) ---------- */
+const loadImg = (src) => new Promise((res) => { if (!src) return res(null); const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => res(i); i.onerror = () => res(null); i.src = src; });
+async function downloadPoster(menu, akg, brand) {
+  try {
+    try { await Promise.all([500, 700, 800].map((w) => document.fonts.load(w + ' 30px "Plus Jakarta Sans"'))); } catch (e) {}
+    const [ph, lg] = await Promise.all([loadImg(menu.photo_url), loadImg(brand && brand.logo_url)]);
+    const W = 1080, cv = document.createElement('canvas'); cv.width = W; cv.height = W; const c = cv.getContext('2d');
+    const F = (w, s) => w + ' ' + s + 'px "Plus Jakarta Sans", system-ui, sans-serif';
+    const YEL = '#fbbf24', DK = '#123a9a', INK = '#1e293b';
+    const rr = (x, y, w, h, r) => { c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); };
+    const fit = (t, mw) => { t = String(t); if (c.measureText(t).width <= mw) return t; while (t.length > 1 && c.measureText(t + '…').width > mw) t = t.slice(0, -1); return t + '…'; };
+    const cov = (im, x, y, w, h) => { const k = Math.max(w / im.width, h / im.height), dw = im.width * k, dh = im.height * k; c.save(); c.beginPath(); c.rect(x, y, w, h); c.clip(); c.drawImage(im, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh); c.restore(); };
+    const spaced = (t, x, y, gap) => { const a = [...t], w = a.reduce((s, ch) => s + c.measureText(ch).width + gap, -gap); let cx = x - w / 2; a.forEach((ch) => { c.fillText(ch, cx, y); cx += c.measureText(ch).width + gap; }); };
+    const nf = (v) => String(Math.round((+v || 0) * 10) / 10).replace('.', ',');
+    c.textAlign = 'left';
+    let g = c.createLinearGradient(0, 0, 0, W); g.addColorStop(0, '#2358d8'); g.addColorStop(1, '#1740b0'); c.fillStyle = g; c.fillRect(0, 0, W, W);
+    if (ph) { c.save(); c.globalAlpha = 0.16; try { c.filter = 'blur(6px)'; } catch (e) {} cov(ph, -20, -20, W + 40, W + 40); c.restore(); }
+    // logo + nama tenant
+    c.save(); c.beginPath(); c.arc(540, 96, 56, 0, 7); c.fillStyle = '#fff'; c.fill(); c.clip();
+    if (lg) { const k = Math.min(92 / lg.width, 92 / lg.height); c.drawImage(lg, 540 - lg.width * k / 2, 96 - lg.height * k / 2, lg.width * k, lg.height * k); }
+    else if (brand && brand.name) { c.fillStyle = '#1d4ed8'; c.font = F(800, 40); c.textAlign = 'center'; c.fillText(brand.name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase(), 540, 111); }
+    c.restore(); c.textAlign = 'left';
+    if (brand && brand.name) { c.fillStyle = '#fff'; c.font = F(500, 24); spaced(fit(brand.name.toUpperCase(), 760), 540, 192, 6); }
+    // judul (maks. 2 baris)
+    const title = ((menu.poster_title || '').trim() || 'MENU HARI INI').toUpperCase(); let fs = 96, lines = [];
+    for (; fs >= 52; fs -= 4) { c.font = F(800, fs); lines = []; let cur = ''; title.split(/\s+/).forEach((w) => { const t = cur ? cur + ' ' + w : w; if (c.measureText(t).width > 960 && cur) { lines.push(cur); cur = w; } else cur = t; }); lines.push(cur); if (lines.length <= 2) break; }
+    c.fillStyle = '#fff'; c.textAlign = 'center'; c.font = F(800, fs); lines.slice(0, 2).forEach((l, i) => c.fillText(fit(l, 960), 540, (lines.length > 1 ? 292 : 330) + i * (fs * 0.98)));
+    // pil tanggal
+    c.textAlign = 'left'; rr(56, 430, 380, 60, 16); c.fillStyle = YEL; c.fill();
+    const ds = menu.production_date ? new Date(menu.production_date + 'T00:00').toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }) : '-';
+    c.fillStyle = INK; c.font = F(700, 28); c.textAlign = 'center'; c.fillText(ds, 246, 470);
+    // panel gizi
+    c.textAlign = 'left'; rr(56, 510, 500, 380, 22); c.fillStyle = DK; c.fill(); c.strokeStyle = '#3b82f6'; c.lineWidth = 3; c.stroke();
+    c.save(); rr(56, 510, 500, 76, 22); c.clip(); c.fillStyle = '#0e2f85'; c.fillRect(56, 510, 500, 76); c.restore();
+    c.fillStyle = YEL; c.font = F(800, 34); c.fillText('Nilai Gizi per Porsi', 80, 560);
+    const R = [['Karbohidrat', 'carbs', 'g', 'akg_carbs'], ['Serat', 'fiber', 'g', null], ['Protein', 'protein', 'g', 'akg_protein'], ['Lemak', 'fat', 'g', 'akg_fat'], ['Energi', 'calories', 'kkal', 'akg_calories']].filter((r) => r[1] !== 'fiber' || +menu.fiber > 0);
+    const gap = R.length === 5 ? 52 : 66;
+    R.forEach(([l, k, u, ak], i) => { const y = 630 + i * gap, v = +menu[k] || 0;
+      c.fillStyle = '#fff'; c.font = F(700, 27); c.fillText(l, 80, y); c.fillText(':', 262, y); c.font = F(600, 27); c.fillText(nf(v) + ' ' + u, 288, y);
+      if (ak) { c.fillStyle = '#fcd34d'; c.font = F(700, 20); c.textAlign = 'right'; c.fillText(Math.round(v / (+akg[ak] || 1) * 100) + '% AKG', 532, y); c.textAlign = 'left'; } });
+    c.fillStyle = 'rgba(255,255,255,0.75)'; c.font = F(500, 18); c.fillText(fit('%AKG dari acuan ' + akg.akg_calories + ' kkal per hari', 440), 80, 876);
+    // foto / ikon
+    rr(580, 520, 444, 370, 28); c.save(); c.clip();
+    if (ph) cov(ph, 580, 520, 444, 370); else { c.fillStyle = DK; c.fillRect(580, 520, 444, 370); c.font = F(400, 190); c.textAlign = 'center'; c.fillStyle = '#fff'; c.fillText(menu.emoji || '🍱', 802, 740); c.textAlign = 'left'; }
+    c.restore(); rr(580, 520, 444, 370, 28); c.strokeStyle = 'rgba(255,255,255,0.45)'; c.lineWidth = 5; c.stroke();
+    if (+menu.portions > 0) { c.save(); c.translate(700, 505); c.rotate(-0.07); rr(-118, -64, 236, 128, 18); c.fillStyle = YEL; c.shadowColor = 'rgba(0,0,0,0.3)'; c.shadowBlur = 18; c.fill(); c.shadowBlur = 0;
+      c.fillStyle = INK; c.textAlign = 'center'; c.font = F(800, 58); c.fillText((+menu.portions).toLocaleString('id-ID'), 0, 14); c.font = F(600, 24); spaced('PORSI', 0, 50, 8); c.restore(); c.textAlign = 'left'; }
+    // daftar isi paket
+    const items = (menu.items || []).filter(Boolean); c.fillStyle = '#fff'; c.font = F(700, 26); c.textAlign = 'center';
+    const ls = []; let cur = ''; items.forEach((it) => { const t = cur ? cur + ' | ' + it : it; if (c.measureText(t).width > 968 && cur) { ls.push(cur); cur = it; } else cur = t; }); if (cur) ls.push(cur);
+    ls.slice(0, 2).forEach((l, i) => c.fillText(fit(l, 968), 540, 934 + i * 36));
+    // batas konsumsi
+    const exp = expiryAt(menu), expired = exp && Date.now() > exp.getTime(); rr(250, 1004, 580, 50, 25); c.fillStyle = expired ? '#0f172a' : YEL; c.fill();
+    c.fillStyle = expired ? '#fff' : INK; c.font = F(700, 25); c.fillText(expired ? 'Sudah melewati batas konsumsi' : 'Konsumsi sebelum ' + jam(menu.max_consume_time), 540, 1038);
+    cv.toBlob((b) => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'menu-' + menu.slug + '-1080x1080.jpg'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }, 'image/jpeg', 0.92);
+  } catch (e) { window.alert('Gagal membuat gambar: ' + (e.message || e)); }
+}
+
 /* ---------- Aplikasi admin ---------- */
 function AdminApp({ onLogout, tenantId, tenantName, onBack }) {
   const [tab, setTab] = useState('admin');
@@ -333,11 +508,13 @@ function AdminApp({ onLogout, tenantId, tenantName, onBack }) {
   const [akg, setAkg] = useState(DEFAULT_AKG);
   const [domain, setDomain] = useState(() => store.get('qm-domain', defaultDomain()));
   const [selId, setSelId] = useState(null);
+  const [brand, setBrand] = useState({});
+  const [hv, setHv] = useState(0);
   const [err, setErr] = useState('');
   const load = async (keep) => {
     try {
-      const [m, a] = await Promise.all([api.menus(tenantId), api.akg(tenantId)]);
-      setMenus(m); setAkg({ ...DEFAULT_AKG, ...a }); setErr('');
+      const [m, a, b] = await Promise.all([api.menus(tenantId), api.akg(tenantId), api.brand(tenantId).catch(() => ({}))]);
+      setMenus(m); setAkg({ ...DEFAULT_AKG, ...a }); setBrand(b || {}); setErr('');
       setSelId(keep && m.find((x) => x.id === keep) ? keep : (m[0] && m[0].id) || null);
     } catch (e) { setErr(e.message || 'Gagal memuat data'); setMenus([]); }
   };
@@ -395,14 +572,18 @@ function AdminApp({ onLogout, tenantId, tenantName, onBack }) {
 
           <AkgBox key={JSON.stringify(akg)} akg={akg} onSave={async (a) => { await api.saveAkg(tenantId, a); await load(selId); }} />
 
+          <BrandBox brand={brand} tenantId={tenantId} onChanged={() => load(selId)} />
+
           <Card>
             <div className="flex items-center justify-between gap-3">
               <div><h2 className="font-bold text-slate-900">Kelola menu</h2><p className="text-xs text-slate-500">Satu tenant hanya punya satu QR. Isi menu bisa diubah kapan saja tanpa mengganti QR.</p></div>
               <button onClick={addNew} disabled={limitReached} title={limitReached ? "Satu tenant hanya boleh punya satu QR" : ""} className="shrink-0 flex items-center gap-1.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold px-3.5 py-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"><Icon d={I.plus} className="w-4 h-4" />Menu baru</button>
             </div>
             <div className="mt-4">{chips}</div>
-            {sel ? <Editor key={sel.id} menu={sel} onSaved={load} onDeleted={async () => { await load(); }} /> : <p className="mt-5 text-sm text-slate-500">Belum ada menu. Klik "Menu baru" untuk mulai.</p>}
+            {sel ? <Editor key={sel.id} menu={sel} tenantId={tenantId} onSaved={async (id) => { await load(id); setHv((v) => v + 1); }} onDeleted={async () => { await load(); setHv((v) => v + 1); }} /> : <p className="mt-5 text-sm text-slate-500">Belum ada menu. Klik "Menu baru" untuk mulai.</p>}
           </Card>
+
+          {sel && !sel._new && <HistoryCard menu={sel} tenantId={tenantId} version={hv} />}
 
           <Card>
             <h2 className="font-bold text-slate-900">QR per menu</h2>
@@ -419,7 +600,7 @@ function AdminApp({ onLogout, tenantId, tenantName, onBack }) {
                 <div className="rounded-[2.5rem] bg-slate-900 p-2.5 shadow-xl">
                   <div className="rounded-[2rem] overflow-hidden bg-sky-50">
                     <div className="bg-slate-900 text-sky-200 text-[11px] px-5 py-2 truncate">{urlOf(sel)}</div>
-                    <MenuView menu={sel} akg={akg} />
+                    <MenuView menu={sel} akg={akg} brand={brand} onDownload={() => downloadPoster(sel, akg, brand)} />
                   </div>
                 </div>) : <p className="text-sm text-slate-500">Belum ada menu.</p>}
             </div>
